@@ -6,12 +6,12 @@ __pycache__/
 # C extensions
 *.so
 
-# models, bin, include
+# models, bin, include, zip, checkpoint files
 models/
 bin/
 include/
 *.zip
-
+*.ckpt
 
 # Distribution / packaging
 .Python
