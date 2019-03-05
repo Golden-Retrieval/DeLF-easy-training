@@ -89,7 +89,7 @@ def build_attention_model(images, num_classes, sess, is_training=True,
                           reuse=False):
     use_batch_norm = True
     weight_decay = 0.0001
-    attention_nonlinear = _SUPPORTED_ATTENTION_NONLINEARITY[0]
+    attention_nonlinear = 'softplus'
     attention_type = _SUPPORTED_ATTENTION_TYPES[0]
     training_resnet = False
     training_attention = True
@@ -114,8 +114,7 @@ def build_attention_model(images, num_classes, sess, is_training=True,
                 weight_decay=weight_decay, batch_norm_scale=True)):
         with slim.arg_scope([slim.batch_norm], is_training=training_attention):
             with tf.variable_scope(
-                    _ATTENTION_VARIABLE_SCOPE, values=[attention_feat],
-                    reuse=reuse):
+                    "attention_block", values=[attention_feat], reuse=reuse):
                 logits = slim.conv2d(
                     attention_feat,
                     num_classes, [1, 1],
