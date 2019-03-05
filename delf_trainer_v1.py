@@ -11,10 +11,6 @@ from data_loader import *
 from train_models import *
 
 dirname = os.path.dirname(os.path.abspath(__file__))
-
-############################[ Local test ]#############################
-dirname = "/home/soma03/projects/ai/final"
-###############################################################################
 sys.path.insert(0, os.path.join(dirname, "models/research/delf/delf"))
 sys.path.insert(1, os.path.join(dirname, "models/research/delf"))
 sys.path.insert(2, os.path.join(dirname, "models/research/slim"))
