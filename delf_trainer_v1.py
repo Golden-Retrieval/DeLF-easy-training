@@ -5,11 +5,25 @@ from __future__ import print_function
 
 import os
 import sys
+import tensorflow as tf
 
-from data_loader import *
-from train_models import *
+from data_loader import time_checker, list_images, pipe_data
+from train_models import train_model
 
 dirname = os.path.dirname(os.path.abspath(__file__))
+
+############################[ Local test ]#############################
+dirname = "/home/soma03/projects/ai/final"
+###############################################################################
+sys.path.insert(0, os.path.join(dirname, "models/research/delf/delf"))
+sys.path.insert(1, os.path.join(dirname, "models/research/delf"))
+sys.path.insert(2, os.path.join(dirname, "models/research/slim"))
+sys.path.insert(3, os.path.join(dirname, "models/research"))
+
+from python import delf_v1
+from nets import resnet_v1
+
+slim = tf.contrib.slim
 
 ####################[ Download pretrained resnet_v1_50.ckpt ]##################
 # This code block is selectable
@@ -27,17 +41,12 @@ if not os.path.exists("resnet_v1_50.ckpt"):
 print("resnet_v1_50.ckpt download is completed")
 ###############################################################################
 
-sys.path.insert(0, os.path.join(dirname, "models/research/delf/delf"))
-sys.path.insert(1, os.path.join(dirname, "models/research/delf"))
-sys.path.insert(2, os.path.join(dirname, "models/research/slim"))
-sys.path.insert(3, os.path.join(dirname, "models/research"))
+_SUPPORTED_TRAINING_STEP = ['resnet_finetune', 'att_learning']
+_SUPPORTED_ATTENTION_TYPES = [
+    'use_l2_normalized_feature', 'use_default_input_feature'
+]
+_SUPPORTED_CHECKPOINT_TYPE = ['resnet_ckpt', 'attention_ckpt']
 
-from python import delf_v1
-from nets import resnet_v1
-
-import tensorflow as tf
-
-slim = tf.contrib.slim
 
 @time_checker
 def build_resnet(images, num_classes, last_layer, is_training=True,
@@ -75,7 +84,108 @@ def build_resnet(images, num_classes, last_layer, is_training=True,
             logits = tf.squeeze(logits, [1, 2], name='spatial_squeeze')
     return logits, feature_map
 
-_SUPPORTED_TRAINING_STEP = ['resnet_default_train', 'resnet_attention_train']
+
+def build_attention_model(images, num_classes, sess, is_training=True,
+                          reuse=False):
+    use_batch_norm = True
+    weight_decay = 0.0001
+    attention_nonlinear = 'softplus'
+    attention_type = _SUPPORTED_ATTENTION_TYPES[0]
+    training_resnet = False
+    training_attention = True
+    kernel = 1
+
+    model = delf_v1.DelfV1()
+    with slim.arg_scope(
+            resnet_v1.resnet_arg_scope(use_batch_norm=use_batch_norm)):
+        attention_feat, attention_prob, attention_score, feature_map, _ = (
+            model.GetAttentionPrelogit(
+                images,
+                weight_decay,
+                attention_nonlinear=attention_nonlinear,
+                attention_type=attention_type,
+                kernel=kernel,
+                training_resnet=training_resnet,
+                training_attention=training_attention,
+                reuse=reuse))
+
+    with slim.arg_scope(
+            resnet_v1.resnet_arg_scope(
+                weight_decay=weight_decay, batch_norm_scale=True)):
+        with slim.arg_scope([slim.batch_norm], is_training=training_attention):
+            with tf.variable_scope(
+                    "attention_block", values=[attention_feat], reuse=reuse):
+                logits = slim.conv2d(
+                    attention_feat,
+                    num_classes, [1, 1],
+                    activation_fn=None,
+                    normalizer_fn=None,
+                    scope='logits')
+                logits = tf.squeeze(logits, [1, 2], name='spatial_squeeze')
+    return logits, attention_prob, feature_map
+
+
+def restore_weight(sess, ckpt_type, ckpt_path='resnet_v1_50.ckpt'):
+    """
+    If you have "abc.meta, abc.index, abc.data" then just give "abc" to ckpt_path.
+    """
+    #########################[ Initialize all variable ]#############################
+    global_init = tf.global_variables_initializer()
+    sess.run(global_init)
+
+    ############## [ restore variable from exist checkpoint] ##############
+    if ckpt_type == _SUPPORTED_CHECKPOINT_TYPE[0]:
+        restore_var = [v for v in tf.global_variables() if 'resnet' in v.name]
+    elif ckpt_type == _SUPPORTED_CHECKPOINT_TYPE[1]:
+        restore_var = [v for v in tf.global_variables() if
+                       ('resnet' in v.name) or ('attention_block' in v.name)]
+    else:
+        raise Exception(
+            "You should fill valid config.ckpt_type: Check delf_train.py _SUPPORTED_CHECKPOINT_TYPE")
+    saver = tf.train.Saver(restore_var)
+    saver.restore(sess, ckpt_path)
+    print("model weights completed")
+    return None
+
+
+@time_checker
+def build_attention(images, num_classes, sess, is_training=True, reuse=False):
+    use_batch_norm = True
+    weight_decay = 0.0001
+    attention_nonlinear = 'softplus'
+    attention_type = _SUPPORTED_ATTENTION_TYPES[0]
+    training_resnet = False
+    training_attention = True
+    kernel = 1
+
+    model = delf_v1.DelfV1()
+    with slim.arg_scope(
+            resnet_v1.resnet_arg_scope(use_batch_norm=use_batch_norm)):
+        attention_feat, attention_prob, attention_score, feature_map, _ = (
+            model.GetAttentionPrelogit(
+                images,
+                weight_decay,
+                attention_nonlinear=attention_nonlinear,
+                attention_type=attention_type,
+                kernel=kernel,
+                training_resnet=training_resnet,
+                training_attention=training_attention,
+                reuse=reuse))
+
+    with slim.arg_scope(
+            resnet_v1.resnet_arg_scope(
+                weight_decay=weight_decay, batch_norm_scale=True)):
+        with slim.arg_scope([slim.batch_norm], is_training=training_attention):
+            with tf.variable_scope(
+                    "attention_block", values=[attention_feat], reuse=reuse):
+                logits = slim.conv2d(
+                    attention_feat,
+                    num_classes, [1, 1],
+                    activation_fn=None,
+                    normalizer_fn=None,
+                    scope='logits')
+                logits = tf.squeeze(logits, [1, 2], name='spatial_squeeze')
+    return logits, attention_prob, feature_map
 
 
 class Config():
@@ -86,62 +196,82 @@ class Config():
         self.fc_learning_rate = 0.0001
         self.fc_epoch = 5
         self.conv_learning_rate = 0.0001
+        self.att_learning_rate = 0.0001
         self.img_shape = (224, 224, 3)
         self.restore_file = "resnet_v1_50.ckpt"
         self.last_layer = 'resnet_v1_50/block3'
-        self.data_path = None
+        self.data_path = "Fill it"
+        self.train_data_path = "Don't Fill it"
         self.save_name = 'local_ckpt/resnet_tune'
         self.dash_size = 80
-        self.sess = None
-        self.images = None
-        self.labels = None
-        self.num_train_batches = None
-        self.num_val_batches = None
-        self.images_holder = None
-        self.logits = None
-        self.feature_map = None
-        self.num_classes = None
+        self.sess = "Don't Fill it"
+        self.images = "Don't Fill it"
+        self.labels = "Don't Fill it"
+        self.num_train_batches = "Don't Fill it"
+        self.num_val_batches = "Don't Fill it"
+        self.images_holder = "Don't Fill it"
+        self.logits = "Don't Fill it"
+        self.feature_map = "Don't Fill it"
+        self.num_classes = "Don't Fill it"
+        self.ckpt_type = "Fill it"
         self.train_step = _SUPPORTED_TRAINING_STEP[0]
 
 
 class DelfTrainerV1(object):
     # delf trainer initializer
     def __init__(self, config):
+
+        ###################[ config, sess, pipeline ]#######
         self.config = config
-        train_data_path = config.data_path + '/train'
+        config.train_data_path = config.data_path + "/train"
         config.sess = tf.Session()
+        self._pipeline_data()
+
+        ###################[ build model ]##################
+        if config.train_step is 'resnet_finetune':
+            self._build_resnet_graph()
+        elif config.train_step is 'att_learning':
+            self._build_attention_graph()
+        else:
+            raise Exception("You should specify correct train step")
+
+        ###################[ restore checkpoint ]############
+        restore_weight(config.sess, config.ckpt_type, config.restore_file)
+
+    def _pipeline_data(self):
+        config = self.config
         config.images, config.labels, config.num_train_batches, \
-            config.num_val_batches = pipe_data(config, train_data_path)
+        config.num_val_batches = pipe_data(self.config, config.train_data_path)
         batch_shape = (None, *config.img_shape)
         config.images_holder = tf.placeholder(shape=batch_shape,
                                               dtype=tf.float32)
-        if config.train_step is 'resnet_default_train':
-            config.logits, config.feature_map = self._build_resnet_graph()
-        elif config.train_step is 'resnet_attention_train':
-            # _build_attention_graph
-            pass
-        else:
-            raise Exception("You should specify correct train step")
 
     # build resnet model to fine-tune
     def _build_resnet_graph(self):
         config = self.config
-        logits, feauture_map = build_resnet(config.images_holder,
-                                            config.num_classes,
-                                            config.last_layer)
-        return logits, feauture_map
+        config.logits, config.feature_map = build_resnet(config.images_holder,
+                                                         config.num_classes,
+                                                         config.last_layer)
+        return None
 
-    # build attention model to attention study
+        # build attention model to attention study
+
     def _build_attention_graph(self):
+        config = self.config
+        config.logits, config.attention_prob, feature_map = build_attention(
+            config.images_holder, config.num_classes, config.sess)
         return None
 
     # execute training with the built graph
     def run(self):
         config = self.config
-        if config.train_step == "resnet_default_train":
-            train_resnet(config)
-        elif config.train_step == "resnet_attention_train":
-            pass
+        train_model(config)
+
+# if config.train_step == "resnet_finetune":
+#             train_resnet(config)
+#         elif config.train_step == "att_learning":
+#             train_att(config)
+
 
 
 
