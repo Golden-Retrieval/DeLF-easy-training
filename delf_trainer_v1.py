@@ -7,10 +7,14 @@ import os
 import sys
 import tensorflow as tf
 
-from data_loader import *
-from train_models import *
+from data_loader import time_checker, list_images, pipe_data
+from train_models import train_model
 
 dirname = os.path.dirname(os.path.abspath(__file__))
+
+############################[ Local test ]#############################
+dirname = "/home/soma03/projects/ai/final"
+###############################################################################
 sys.path.insert(0, os.path.join(dirname, "models/research/delf/delf"))
 sys.path.insert(1, os.path.join(dirname, "models/research/delf"))
 sys.path.insert(2, os.path.join(dirname, "models/research/slim"))
@@ -261,10 +265,12 @@ class DelfTrainerV1(object):
     # execute training with the built graph
     def run(self):
         config = self.config
-        if config.train_step == "resnet_finetune":
-            train_resnet(config)
-        elif config.train_step == "att_learning":
-            train_att(config)
+        train_model(config)
+
+# if config.train_step == "resnet_finetune":
+#             train_resnet(config)
+#         elif config.train_step == "att_learning":
+#             train_att(config)
 
 
 
