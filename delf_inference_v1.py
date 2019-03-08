@@ -97,7 +97,7 @@ class DelfInferenceV1(object):
         n_subq = 8        # number of sub-quantizers
         n_centroids = 32  # number of centroids for each sub-vector
         n_bits = 5        # number of bits for each sub-vector
-        n_probe = 3       # number of Nearest Neighbors
+        n_probe = 3       # number of voronoi cell to explore
         coarse_quantizer = faiss.IndexFlatL2(dim)
         pq = faiss.IndexIVFPQ(coarse_quantizer, dim, n_centroids, n_subq, n_bits) 
         pq.nprobe = n_probe
@@ -240,9 +240,23 @@ class DelfInferenceV1(object):
         
 
         return result
-            
-            
-            
+    # 3. search query  
+    def search_from_path(self, query_path, num, mode='frequency', verification=True):       
+        # 3.1 inference query images to descriptors (infer_image_to_des)
+        query_result = self.infer_image_to_des(query_path) # result['locations'], result['descriptors']
+        query_des_np = np.concatenate(np.asarray(query_result['descriptors']), axis=0)
+        
+        # 3.2 pq search
+        k = 10  # k nearest neighber
+        _, similar_des_list = self.pq.search(query_des_np, k)
+        
+        # 3.3 find similar image list by frequency score (get_similar_img(mode='frequency', searched_des))
+        similar_img_list = self.get_similar_img(similar_des_list, num)
+        
+        # TODO: 3.4 verification by ransac (rerank)
+        
+        
+        
         
 def ensure_list(path):
     if isinstance(path, list):
