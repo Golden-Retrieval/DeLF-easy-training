@@ -57,6 +57,8 @@ from tqdm import trange
 import time
 from sklearn.externals import joblib
 import numpy as np
+from collections import Counter
+
 num_preprocess_threads = 32
 
 
@@ -171,7 +173,7 @@ class DelfInferenceV1(object):
         # ignore cache loading & execute inference
         if ignore_cache or not os.path.exists(cache_path):
             
-            result = self.infer_image_to_des(db_path) # result['locations'], result['descriptors']
+            result, self.db_image_paths = self.infer_image_to_des(db_path) # result['locations'], result['descriptors']
             # cache save
             with open(cache_path, 'wb') as f:
                 joblib.dump(result, f)
@@ -197,7 +199,7 @@ class DelfInferenceV1(object):
         image_paths, image_labels = list_images(dataset_path)
         
         # get number of classes
-        num_classes = len(set(image_labels))
+        num_classes = len(set(image_paths))
         
         image_dataset = tf.data.Dataset.from_tensor_slices((image_paths, image_labels))
         image_dataset = image_dataset.shuffle(buffer_size=len(image_paths))
@@ -239,24 +241,75 @@ class DelfInferenceV1(object):
         print(len(image_paths), ' extracting took {:.3f} s'.format((t1-t0)))
         
 
-        return result
+        return result, image_paths
+    
     # 3. search query  
     def search_from_path(self, query_path, num, mode='frequency', verification=True):       
         # 3.1 inference query images to descriptors (infer_image_to_des)
-        query_result = self.infer_image_to_des(query_path) # result['locations'], result['descriptors']
+        query_result, self.query_image_paths = self.infer_image_to_des(query_path) # result['locations'], result['descriptors']
         query_des_np = np.concatenate(np.asarray(query_result['descriptors']), axis=0)
+        # index table for query set
+        query_des_from_img, query_img_from_des = make_index_table(query_result['descriptors'])
+        query_img_idx = list(query_des_from_img.keys())
+        
         
         # 3.2 pq search
-        k = 10  # k nearest neighber
-        _, similar_des_list = self.pq.search(query_des_np, k)
+        k = 60  # k nearest neighber
+        _, query_des2desList = self.pq.search(query_des_np, k) 
         
         # 3.3 find similar image list by frequency score (get_similar_img(mode='frequency', searched_des))
-        similar_img_list = self.get_similar_img(similar_des_list, num)
+        top_k = 5
+        query_des2imgList = get_similar_img(query_des2desList, top_k)
         
         # TODO: 3.4 verification by ransac (rerank)
         
+        # 3.5 index to image path
+        
+        for query_i in query_des2imgList:
+            top_k_img_i_list = query_des2imgList[query_i]['index']
+            top_k_img_path = self.db_image_paths[for img_i in top_k_img_i_list]
+            query_des2imgList['path'] = top_k_img_path
+            
+        self.result = query_des2imgList
+        return query_des2imgList
+            
+        
+    def print_result():
+        for i in self.result:
+            print('{}th query ({}): '.format(i, self.query_image_paths[i]))
+            indices = query_image_paths[i]['index']
+            for i, db_index in enumerate(indices):
+                print('  top {}: {}', i, self.db_image_paths[db_index])
+    
+    def get_similar_img(self, query_des2desList, top_k=100):
+        
+        query_img2imgFreq = {}
+
+        # travel each query image's descriptor list
+        for img_i in query_des_from_img:
+            # img_i : query image index
+            # query_des_from_img[img_i] : list of descrptors' indices per image index
+        #     print(img_i, query_des_from_img[img_i])
+
+            # aggregate all searched descriptors to one list per one image
+            all_searched_des = []
+            # travel 
+            for des_i in query_des_from_img[img_i]:
+                all_searched_des.extend(query_des2imgList[des_i])
+
+            imgFreq = Counter(all_searched_des).most_common()
+            imgFreq = imgFreq[:top_k]
+            index, freq = list(zip(*imgFreq))
+            query_img2imgFreq[img_i] = {'index': index, 'freq':freq}
+            
+        result = query_img2imgFreq
+        return query_img2imgFreq
         
         
+
+        
+def flatten(x):
+    return list(itertools.chain.from_iterable(x))
         
 def ensure_list(path):
     if isinstance(path, list):
@@ -294,6 +347,7 @@ if __name__ == '__main__':
                       help='Add trained model.'\
                       'If you did not have any trained model, train from ..script')
     args.add_argument('--db_path', type=str, default='/home/soma03/projects/data/landmark/cleand/image20/local/train/train_data')
+    args.add_argument('--query_path', type=str, default='/home/soma03/projects/data/landmark/cleand/image20/local/train/train_data/31/')
 
     args.add_argument('--epoch', type=int, default=50)
     args.add_argument('--batch_size', type=int, default=64)
@@ -319,5 +373,7 @@ if __name__ == '__main__':
     # 3.2 pq search
     # 3.3 find similar image list by frequency score (get_similar_img(mode='frequency', searched_des))
     # 3.4 verification by ransac (rerank)
-    # delf_model.search_from_path(query_path, mode='frequency', verification=True)
+    delf_model.search_from_path(query_path, mode='frequency', verification=True)
     
+    # print
+    delf_model.print_result()
