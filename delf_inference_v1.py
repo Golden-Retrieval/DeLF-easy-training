@@ -58,7 +58,7 @@ import time
 from sklearn.externals import joblib
 import numpy as np
 from collections import Counter
-
+from data_loader import query_list_images
 num_preprocess_threads = 32
 
 
@@ -167,21 +167,26 @@ class DelfInferenceV1(object):
         print('weight loaded')
         
     # 2
-    def attach_db_from_path(self, db_path, ignore_cache=False, cache_path='result_cache.joblib'):
+    def attach_db_from_path(self, db_path, ignore_cache=False, cache_path='result_cache.joblib', filename_path='filename_path.joblib'):
         
         # 2.1
+        self.db_image_paths, self.db_image_labels = list_images(db_path)
         # ignore cache loading & execute inference
         if ignore_cache or not os.path.exists(cache_path):
             
-            result, self.db_image_paths = self.infer_image_to_des(db_path) # result['locations'], result['descriptors']
+            result = self.infer_image_to_des(self.db_image_paths, self.db_image_labels) # result['locations'], result['descriptors']
             # cache save
             with open(cache_path, 'wb') as f:
                 joblib.dump(result, f)
+#             with open(filename_path, 'wb') as f:
+#                 joblib.dump(self.db_image_paths, f)
                 
         # exist cache file        
         else:
             with open(cache_path, 'rb') as f:
                 result = joblib.load(f)
+#             with open(filename_path, 'rb') as f:
+#                 self.db_image_paths = joblib.load(f)
             
         # 2.2
         self.des_from_img, self.img_from_des = make_index_table(result['descriptors'])
@@ -194,9 +199,9 @@ class DelfInferenceV1(object):
 
         
     # inference the image list from path to the list of descriptors 
-    def infer_image_to_des(self, dataset_path):
+    def infer_image_to_des(self, image_paths, image_labels):
             
-        image_paths, image_labels = list_images(dataset_path)
+        # image_paths, image_labels = list_images(dataset_path)
         
         # get number of classes
         num_classes = len(set(image_paths))
@@ -241,12 +246,15 @@ class DelfInferenceV1(object):
         print(len(image_paths), ' extracting took {:.3f} s'.format((t1-t0)))
         
 
-        return result, image_paths
+        return result
     
     # 3. search query  
-    def search_from_path(self, query_path, num, mode='frequency', verification=True):       
+    def search_from_path(self, query_path, top_k=5, verification=True):       
         # 3.1 inference query images to descriptors (infer_image_to_des)
-        query_result, self.query_image_paths = self.infer_image_to_des(query_path) # result['locations'], result['descriptors']
+        self.query_image_paths, self.query_image_labels = query_list_images(query_path)
+        
+        
+        query_result = self.infer_image_to_des(self.query_image_paths, self.query_image_labels) # result['locations'], result['descriptors']
         query_des_np = np.concatenate(np.asarray(query_result['descriptors']), axis=0)
         # index table for query set
         query_des_from_img, query_img_from_des = make_index_table(query_result['descriptors'])
@@ -258,7 +266,7 @@ class DelfInferenceV1(object):
         _, query_des2desList = self.pq.search(query_des_np, k) 
         
         # 3.3 find similar image list by frequency score (get_similar_img(mode='frequency', searched_des))
-        top_k = 5
+
         query_des2imgList = get_similar_img(query_des2desList, top_k)
         
         # TODO: 3.4 verification by ransac (rerank)
@@ -267,7 +275,7 @@ class DelfInferenceV1(object):
         
         for query_i in query_des2imgList:
             top_k_img_i_list = query_des2imgList[query_i]['index']
-            top_k_img_path = self.db_image_paths[for img_i in top_k_img_i_list]
+            top_k_img_path = [self.db_image_paths[img_i] for img_i in top_k_img_i_list]
             query_des2imgList['path'] = top_k_img_path
             
         self.result = query_des2imgList
@@ -277,7 +285,7 @@ class DelfInferenceV1(object):
     def print_result():
         for i in self.result:
             print('{}th query ({}): '.format(i, self.query_image_paths[i]))
-            indices = query_image_paths[i]['index']
+            indices = self.query_image_paths[i]['index']
             for i, db_index in enumerate(indices):
                 print('  top {}: {}', i, self.db_image_paths[db_index])
     
@@ -373,7 +381,7 @@ if __name__ == '__main__':
     # 3.2 pq search
     # 3.3 find similar image list by frequency score (get_similar_img(mode='frequency', searched_des))
     # 3.4 verification by ransac (rerank)
-    delf_model.search_from_path(query_path, mode='frequency', verification=True)
+    delf_model.search_from_path(config.query_path, top_k=5, verification=True)
     
     # print
     delf_model.print_result()
