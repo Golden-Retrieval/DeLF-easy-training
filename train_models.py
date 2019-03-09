@@ -54,7 +54,7 @@ def train_model(config):
         tf.cast(correct_prediction, tf.float32))
 
     ############## [ FC training + Conv training] ##############
-    print("there are " + str(config.num_train_batches) + " batches")
+    print("= batches =: " + str(config.num_train_batches))
     for epoch in range(1, config.nb_epoch + 1):
 
         # ========== [ select train mode ] ==============
@@ -68,7 +68,7 @@ def train_model(config):
         else:
             raise Exception("Invalid config.train_step")
 
-        print('Starting epoch %d / %d' % (epoch + 1, config.nb_epoch))
+        print('Starting epoch %d / %d' % (epoch, config.nb_epoch))
         t1 = time.time()
         loss_sum = 0.0
         acc_sum = 0.0
@@ -84,10 +84,11 @@ def train_model(config):
                 [grad_update, accuracy, loss], feed_dict=feed_dict)
             acc_sum += batch_acc.item()
             loss_sum += batch_loss.item()
-            postfix = "batch_acc : %.6f, batch_loss : %.6f" % (
-                batch_acc, batch_loss)
-            print("%d/%d " % (
-                batch, config.num_train_batches) + postfix)
+            if batch % 10 == 0:
+                postfix = "batch_acc : %.6f, batch_loss : %.6f" % (
+                    batch_acc, batch_loss)
+                print("%d/%d " % (
+                    batch, config.num_train_batches) + postfix)
 
         # training set의 평균 accuracy, loss
         avg_acc = acc_sum / config.num_train_batches
