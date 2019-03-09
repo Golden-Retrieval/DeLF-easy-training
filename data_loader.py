@@ -7,6 +7,7 @@ import tensorflow as tf
 def check_train_dataset(dataset_path):
     pass
 
+# TODO: check query dataset and train dataset directories
 def check_infer_dataset(dataset_path):
     def time_checker(f):
         def wrap(*args, **kwargs):
@@ -88,6 +89,16 @@ def list_images(directory):
     labels = list(labels)
     int_labels = _label_to_int(labels)
     return filenames, int_labels
+
+@time_checker
+def query_list_images(directory):
+    """
+    Get all the images in directory/*.jpg
+    """
+    filepaths = [os.path.join(directory, file) for file in os.listdir(directory)]
+    labels = [0 for i in filepaths]
+    return filepaths, labels
+
 
 
 @time_checker
