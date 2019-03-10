@@ -116,3 +116,5 @@ venv.bak/
 
 # cache file
 *.joblib
+
+temp.ipynb
