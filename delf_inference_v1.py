@@ -62,9 +62,11 @@ from collections import Counter
 num_preprocess_threads = 32
 
 
-def BuildModel(layer_name, attention_nonlinear, attention_type,
-               attention_kernel_size):
-    # ExtractKeypointDescriptor에 들어갈 _ModelFn을 return한다.
+def build_delf_graph(graph_inputs):
+    image_placeholder = graph_inputs['image']
+    delf_config = graph_inputs['config']
+    
+    # model function
     def _ModelFn(images, normalized_image, reuse):
 
         if normalized_image:
@@ -73,27 +75,114 @@ def BuildModel(layer_name, attention_nonlinear, attention_type,
             image_tensor = NormalizePixelValues(images)
 
         # attention scores, features 를 얻기 위함
-        model = delf_v1.DelfV1(layer_name)
+        model = delf_v1.DelfV1(delf_config.delf_local_config.layer_name)
         _, attention, _, feature_map, _ = model.GetAttentionPrelogit(
             image_tensor,
-            attention_nonlinear=attention_nonlinear,
-            attention_type=attention_type,
-            kernel=[attention_kernel_size, attention_kernel_size],
+            attention_nonlinear='softplus',
+            attention_type='use_l2_normalized_feature',
+            kernel=[1,1],
             training_resnet=False,
             training_attention=False,
             reuse=reuse)
         return attention, feature_map
 
-    return _ModelFn
+    print('\n\n--ExtractKeypointDescriptor')
+    # ExtractKeypointDescriptor from delf class
+    boxes, feature_scales, features, scores = (
+        ExtractKeypointDescriptor(
+            image_placeholder,
+            layer_name=delf_config.delf_local_config.layer_name,
+            image_scales=tf.constant([round(v,4) for v in delf_config.image_scales]),
+            iou=delf_config.delf_local_config.iou_threshold,
+            max_feature_num=delf_config.delf_local_config.max_feature_num,
+            abs_thres=1.5,
+            model_fn=_ModelFn))
 
+    print('\n\n--DelfFeaturePostProcessing')
+    # get end nodes
 
+    locations, descriptors = DelfFeaturePostProcessing(
+        boxes, features, delf_config)
+
+    end_points = {
+        'boxes': boxes,
+        'scales': feature_scales,
+        'scores': scores,
+        'features': features,
+        'locations': locations,
+        'descriptors': descriptors
+    }
+    
+    return end_points
+
+    
 
 class DelfInferenceV1(object):
-    def __init__(self, model_path=None):
-        # 1.1
-        assert tf.train.checkpoint_exists(model_path), "{} is not a tensorflow checkpoint file".format(model_path)        
-        ckpt = tf.train.latest_checkpoint(model_path)
+    def __init__(self, model_path=None, use_hub=False):
         
+        # Parse DelfConfig proto.
+        delf_config = delf_config_pb2.DelfConfig()
+        delf_config_path = 'delf_config.pbtxt'
+        with tf.gfile.FastGFile(delf_config_path, 'r') as f:
+            text_format.Merge(f.read(), delf_config)
+        
+        if use_hub:
+            import tensorflow_hub as hub
+            
+            # set placeholder
+            self.image_placeholder = tf.placeholder(shape=(None, None, 3), dtype=tf.float32)
+            
+            # get graph or module
+            hub_module = hub.Module('https://modeldepot.io/mikeshi/delf')
+            
+            # input setting module input 
+            module_inputs = {
+                'image': self.image_placeholder,
+                'score_threshold': delf_config.delf_local_config.score_threshold,
+                'image_scales': delf_config.image_scales,
+                'max_feature_num': delf_config.delf_local_config.max_feature_num
+            }
+
+            # get end points
+            self.end_points = hub_module(module_inputs, as_dict=True)
+            
+            # get session
+            self.sess = tf.Session(
+                config=tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
+            )
+            
+        else:                
+            # check ckpt file
+            assert tf.train.checkpoint_exists(model_path), "{} is not a tensorflow checkpoint file".format(model_path)        
+            ckpt = tf.train.latest_checkpoint(model_path)
+            
+            # set placeholder
+            self.image_placeholder = tf.placeholder(shape=(224, 224, 3), dtype=tf.float32)
+
+            # set graph input
+            graph_inputs = {
+                'image': self.image_placeholder,
+                'config': delf_config
+            }
+            
+            # build and get end points of graph
+            self.end_points = build_delf_graph(graph_inputs)
+            
+            # get session
+            self.sess = tf.Session(
+                config=tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
+            )
+
+            # global initializer
+            init_op = tf.global_variables_initializer()    
+            self.sess.run(init_op)
+            
+            # load weight from ckpt file
+            restore_var = [v for v in tf.global_variables() if 'resnet' in v.name]
+            saver = tf.train.Saver(restore_var)
+            saver.restore(self.sess, ckpt)
+            
+
         # 1.3
         dim = 40          # dimension
         n_subq = 8        # number of sub-quantizers
@@ -104,78 +193,9 @@ class DelfInferenceV1(object):
         pq = faiss.IndexIVFPQ(coarse_quantizer, dim, n_centroids, n_subq, n_bits) 
         pq.nprobe = n_probe
         self.pq = pq
-        
-        # 1.4 build graph
-        
-        # 1.4.1 define placeholder
-        self.images_holder = tf.placeholder(shape=(224, 224, 3), dtype=tf.float32)
-        self.labels_holder = tf.placeholder(shape=(), dtype=tf.int32) # not used in BuildModel
-        num_classes = 137 # TODO: edit class to get_class_num function
-        
-        # 1.4.2 build model
-        layer_name = 'resnet_v1_50/block3'
-        attention_nonlinear = 'softplus'
-        attention_type = 'use_l2_normalized_feature'
-        attention_kernel_size = 1
-
-        # Parse DelfConfig proto.
-        delf_config = delf_config_pb2.DelfConfig()
-        delf_config_path = 'delf_config.pbtxt'
-        with tf.gfile.FastGFile(delf_config_path, 'r') as f:
-            text_format.Merge(f.read(), delf_config)
-
-        # image_scales
-        # TODO: collect all configs into delf_config.pbtxt file
-        #image_scales = tf.constant([0.7072, 1.0])
-        image_scales = tf.constant([0.25, 0.3536, 0.5000, 0.7072, 1.0])
-        max_feature_num = 500
-
-        print('\n\n--_model_fn')
-        # model function
-        _model_fn = BuildModel(layer_name, attention_nonlinear, attention_type, attention_kernel_size)
-
-        print('\n\n--ExtractKeypointDescriptor')
-        # ExtractKeypointDescriptor from delf class
-        boxes, feature_scales, features, scores = (
-            ExtractKeypointDescriptor(
-                self.images_holder,
-                layer_name='resnet_v1_50/block3',
-                image_scales=image_scales,
-                iou=1.0,
-                max_feature_num=max_feature_num,
-                abs_thres=1.5,
-                model_fn=_model_fn))
-        
-        print('\n\n--DelfFeaturePostProcessing')
-        # get end nodes
-        raw_descriptors = features
-        self.locations_node, self.descriptors_node = DelfFeaturePostProcessing(
-            boxes, raw_descriptors, delf_config)
-        
-        print('\n\n--sess')
-        # 1.2
-        self.sess = tf.Session(config=tf.ConfigProto(
-      allow_soft_placement=True, log_device_placement=True))
-        
-        # 1.4.3 load weights
-        
-        print('\n\n--init')
-        # global initializer
-        print('----global_variables_initializer')
-        init_op = tf.global_variables_initializer()    
-        print('----run')
-        self.sess.run(init_op)
-        print('----run_')
-        
-        print('\n\n--restore')
-        # restore
-        restore_var = [v for v in tf.global_variables() if 'resnet' in v.name]
-        saver = tf.train.Saver(restore_var)
-        saver.restore(self.sess, ckpt)
-        #saver.restore(self.sess, "resnet_v1_50.ckpt")
-        
-        print('weight loaded')
-        
+        print('pq')
+            
+            
     # 2
     def attach_db_from_path(self, db_path, ignore_cache=False, cache_path='result_cache.joblib', filename_path='filename_path.joblib'):
         
@@ -214,8 +234,6 @@ class DelfInferenceV1(object):
             
         # image_paths, image_labels = list_images(dataset_path)
         
-        # get number of classes
-        num_classes = len(set(image_paths))
         
         image_dataset = tf.data.Dataset.from_tensor_slices((image_paths, image_labels))
         image_dataset = image_dataset.shuffle(buffer_size=len(image_paths))
@@ -238,7 +256,7 @@ class DelfInferenceV1(object):
             
             # get locations & descriptors
             input_images, input_labels = self.sess.run([images, labels])
-            feed_dict={self.images_holder: input_images, self.labels_holder: input_labels}
+            feed_dict={self.image_placeholder: input_images}
             locations_out, descriptors_out = self.sess.run([self.locations_node, self.descriptors_node], feed_dict=feed_dict)
             locations_list.append(locations_out)
             descriptors_list.append(descriptors_out)
@@ -393,7 +411,7 @@ if __name__ == '__main__':
     # TODO: 1.4 build graph
     print('\n\n1')
     print('='*30)
-    delf_model = DelfInferenceV1(model_path=config.model_path)
+    delf_model = DelfInferenceV1(model_path=config.model_path, use_hub=False)
 
     # 2.attach db image path to delf_model instance
     # 2.1 inference db images to descriptors (infer_image_to_des)
