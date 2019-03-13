@@ -104,10 +104,10 @@ def load_dataset(directory, no_label=False):
 
 @time_checker
 def _parse_function(filename, label, size=(224, 224)):
-    height, width = size
     image_string = tf.read_file(filename)
     image_decoded = tf.image.decode_jpeg(image_string, channels=3)  # (1)
-    image_decoded = tf.image.resize_images(image_decoded, (height, width))
+    image_decoded = tf.image.convert_image_dtype(image_decoded, tf.float32)
+    image_decoded = tf.image.resize_images(image_decoded, size)
     image = tf.cast(image_decoded, tf.float32)
     return image, label
 

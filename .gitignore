@@ -118,3 +118,4 @@ venv.bak/
 *.joblib
 
 temp.ipynb
+*.jpg
