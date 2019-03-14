@@ -59,7 +59,13 @@ from sklearn.externals import joblib
 import numpy as np
 from collections import Counter
 
+# ransac
+from skimage.feature import plot_matches
+from skimage.measure import ransac
+from skimage.transform import AffineTransform
+
 num_preprocess_threads = 32
+
 
 
 def build_delf_graph(graph_inputs):
@@ -126,20 +132,23 @@ class DelfInferenceV1(object):
         with tf.gfile.FastGFile(delf_config_path, 'r') as f:
             text_format.Merge(f.read(), delf_config)
         
+        tf.reset_default_graph()
+        tf.logging.set_verbosity(tf.logging.FATAL)
+
         if use_hub:
             import tensorflow_hub as hub
             
-            # set placeholder
+            # set hub model
             self.image_placeholder = tf.placeholder(shape=(None, None, 3), dtype=tf.float32)
-            
-            # get graph or module
+#             hub_module = hub.Module("https://tfhub.dev/google/delf/1")
             hub_module = hub.Module('https://modeldepot.io/mikeshi/delf')
+            print("use modeldepot")
             
             # input setting module input 
             module_inputs = {
                 'image': self.image_placeholder,
                 'score_threshold': delf_config.delf_local_config.score_threshold,
-                'image_scales': delf_config.image_scales,
+                'image_scales': tf.constant([round(v,4) for v in delf_config.image_scales]),
                 'max_feature_num': delf_config.delf_local_config.max_feature_num
             }
 
@@ -150,6 +159,10 @@ class DelfInferenceV1(object):
             self.sess = tf.Session(
                 config=tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
             )
+            
+            # global initializer
+            self.sess.run(tf.global_variables_initializer())
+            self.sess.run(tf.tables_initializer())
             
         else:                
             # check ckpt file
@@ -174,8 +187,7 @@ class DelfInferenceV1(object):
             )
 
             # global initializer
-            init_op = tf.global_variables_initializer()    
-            self.sess.run(init_op)
+            self.sess.run(tf.global_variables_initializer())
             
             # load weight from ckpt file
             restore_var = [v for v in tf.global_variables() if 'resnet' in v.name]
@@ -197,17 +209,17 @@ class DelfInferenceV1(object):
             
             
     # 2
-    def attach_db_from_path(self, db_path, ignore_cache=False, cache_path='result_cache.joblib', filename_path='filename_path.joblib'):
+    def attach_db_from_path(self, db_path, ignore_cache=False, cache_path='result_cache_hub.joblib', filename_path='filename_path.joblib'):
         
         # 2.1
         self.db_image_paths, self.db_image_labels = load_dataset(db_path)
         # ignore cache loading & execute inference
         if ignore_cache or not os.path.exists(cache_path):
             
-            result = self.infer_image_to_des(self.db_image_paths, self.db_image_labels) # result['locations'], result['descriptors']
+            self.db_result = self.infer_image_to_des(self.db_image_paths, self.db_image_labels) # result['locations'], result['descriptors']
             # cache save
             with open(cache_path, 'wb') as f:
-                joblib.dump(result, f)
+                joblib.dump(self.db_result, f)
 #             with open(filename_path, 'wb') as f:
 #                 joblib.dump(self.db_image_paths, f)
                 
@@ -215,15 +227,16 @@ class DelfInferenceV1(object):
         else:
             print("no inference on db")
             with open(cache_path, 'rb') as f:
-                result = joblib.load(f)
+                self.db_result = joblib.load(f)
 #             with open(filename_path, 'rb') as f:
 #                 self.db_image_paths = joblib.load(f)
-            
+        for i in range(20):
+            print('{}th descriptors num: {}'.format(i, self.db_result['descriptors'][i].shape))
         # 2.2
-        self.des_from_img, self.img_from_des = make_index_table(result['descriptors'])
+        self.des_from_img, self.img_from_des = make_index_table(self.db_result['descriptors'])
 
         # 2.3
-        descriptors_np = np.concatenate(np.asarray(result['descriptors']), axis=0)
+        descriptors_np = np.concatenate(np.asarray(self.db_result['descriptors']), axis=0)
         if not self.pq.is_trained:
             self.pq.train(descriptors_np)
         self.pq.add(descriptors_np)
@@ -256,8 +269,11 @@ class DelfInferenceV1(object):
             
             # get locations & descriptors
             input_images, input_labels = self.sess.run([images, labels])
-            feed_dict={self.image_placeholder: input_images}
-            locations_out, descriptors_out = self.sess.run([self.locations_node, self.descriptors_node], feed_dict=feed_dict)
+            
+            locations_out, descriptors_out = self.sess.run(
+                [self.end_points['locations'], self.end_points['descriptors']], 
+                feed_dict={self.image_placeholder: input_images}
+                 )
             locations_list.append(locations_out)
             descriptors_list.append(descriptors_out)
             
@@ -283,15 +299,16 @@ class DelfInferenceV1(object):
         self.query_image_paths, self.query_image_labels = load_dataset(query_path, no_label=True)
         
         
-        query_result = self.infer_image_to_des(self.query_image_paths, self.query_image_labels) # result['locations'], result['descriptors']
-        query_des_np = np.concatenate(np.asarray(query_result['descriptors']), axis=0)
+        self.query_result = self.infer_image_to_des(self.query_image_paths, self.query_image_labels) # result['locations'], result['descriptors']
+        query_des_np = np.concatenate(np.asarray(self.query_result['descriptors']), axis=0)
         # index table for query set
-        self.query_des_from_img, self.query_img_from_des = make_index_table(query_result['descriptors'])
+        self.query_des_from_img, self.query_img_from_des = make_index_table(self.query_result['descriptors'])
         query_img_idx = list(self.query_des_from_img.keys())
         
         
         # 3.2 pq search
-        k = 60  # k nearest neighber
+        k = 3  # k nearest neighber
+        
         _, query_des2desList = self.pq.search(query_des_np, k) 
         
         # 3.3 find similar image list by frequency score (get_similar_img(mode='frequency', searched_des))
@@ -312,6 +329,9 @@ class DelfInferenceV1(object):
         query_img2imgFreq = self.get_similar_img(query_des2imgList, top_k)
         
         # TODO: 3.4 verification by ransac (rerank)
+        if verification:
+            query_img2imgFreq = self.get_ransac_result(query_img2imgFreq)
+
         
         # 3.5 index to image path
         
@@ -321,16 +341,50 @@ class DelfInferenceV1(object):
             query_img2imgFreq[query_i]['path'] = top_k_img_path
             
         self.result = query_img2imgFreq
+        
+    
+        
+        
         return query_img2imgFreq
             
+    def get_ransac_result(self, query_img2imgFreq):
         
+        # explore each image's frequency-based ranked image indices
+        for query_i in query_img2imgFreq:
+            ranked_list = query_img2imgFreq[query_i]['index']
+            db_inliers = {}
+            for db_i in ranked_list:
+                db_locations = np.array(self.db_result['locations'][db_i])
+                query_locations = np.array(self.query_result['locations'][query_i])
+                
+                # Perform geometric verification using RANSAC.
+                _, inliers = ransac(
+                    (db_locations, query_locations),
+                    AffineTransform,
+                    min_samples=3,
+                    residual_threshold=20,
+                    max_trials=1000)
+                print('sum(inliers):', sum(inliers),', type(inliers):', type(inliers))
+                
+                db_inliers[db_i] = sum(inliers)
+            query_img2imgFreq[i]['inliers'] = sorted(db_inliers.items(), key=lambda dict: dict[1], reverse=True)
+            
+        return query_img2imgFreq
+    
     def print_result(self):
         for i in self.result:
             print('{}th query ({}): '.format(i, self.query_image_paths[i]))
             indices = self.result[i]['index']
             for i, db_index in enumerate(indices):
                 print('  top {}: {}'.format(i, self.db_image_paths[db_index]))
-    
+
+    def print_inliers(self):
+        for i in self.result:
+            print('{}th query ({}): '.format(i, self.query_image_paths[i]['path']))
+            inliers = self.result[i]['index']
+            for i, db_index in enumerate(inliers):
+                print('  top {} inliers: {}, {}'.format(i, inliers[db_index], self.db_image_paths[db_index]))
+                
     def get_similar_img(self, query_des2imgList, top_k):
         
         query_img2imgFreq = {}
@@ -355,7 +409,7 @@ class DelfInferenceV1(object):
         result = query_img2imgFreq
         return query_img2imgFreq
         
-        
+    
 
         
 def flatten(x):
@@ -411,7 +465,7 @@ if __name__ == '__main__':
     # TODO: 1.4 build graph
     print('\n\n1')
     print('='*30)
-    delf_model = DelfInferenceV1(model_path=config.model_path, use_hub=False)
+    delf_model = DelfInferenceV1(model_path=config.model_path, use_hub=True)
 
     # 2.attach db image path to delf_model instance
     # 2.1 inference db images to descriptors (infer_image_to_des)
@@ -435,7 +489,8 @@ if __name__ == '__main__':
     # print
     print('\n\n4')
     print('='*30)
-    delf_model.print_result()
+#     delf_model.print_result()
+    delf_model.print_inliers()
     
     print('\n\n5')
     print('='*30)
