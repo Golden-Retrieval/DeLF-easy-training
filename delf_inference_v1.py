@@ -351,13 +351,13 @@ def get_ransac_score(query_index, db_index):
     query_locations = self.query_result['locations'][query_index]
     query_descriptors = self.query_result['descriptors'][query_index]
     query_num_features = query_locations.shape[0]
-    print("Loaded query image's %d features" % query_num_features)
+    # print("Loaded query image's %d features" % query_num_features)
     
     # get locations and descriptors from db
     db_locations = self.db_result['locations'][db_index]
     db_descriptors = self.db_result['descriptors'][db_index]
     db_num_features = db_locations.shape[0]
-    print("Loaded db image's %d features" % db_num_features)
+    # print("Loaded db image's %d features" % db_num_features)
      
     # Find nearest-neighbor matches using a KD tree.
     db_tree = cKDTree(db_descriptors)
@@ -390,18 +390,19 @@ def get_ransac_score(query_index, db_index):
         return 0    
     
     def get_ransac_result(self, query_img2imgFreq):
-            
+        query_inlier_rank = {}
         # explore each image's frequency-based ranked image indices
-        for query_i in query_img2imgFreq:
+        for query_i in trange(len(query_img2imgFreq)):
             ranked_list = query_img2imgFreq[query_i]['index']
             db_inliers = {}
             for db_i in ranked_list:
                 ransac_score = get_ransac_score(query_i, db_i)
                 db_inliers[db_i] = ransac_score
-                
-            query_img2imgFreq[i]['inliers'] = sorted(db_inliers.items(), key=lambda dict: dict[1], reverse=True)
-            
-        return query_img2imgFreq
+            db_inliers_sorted = sorted(db_inliers.items(), key=lambda dict: dict[1], reverse=True)
+            index, score = list(zip(*db_inliers_sorted))
+            query_inlier_rank[query_i] = {'index': index, 'score': score}
+
+        return query_inlier_rank
     
     def print_result(self):
         for i in self.result:
