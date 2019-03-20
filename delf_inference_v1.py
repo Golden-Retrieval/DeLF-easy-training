@@ -60,6 +60,7 @@ import numpy as np
 from collections import Counter
 
 # ransac
+from scipy.spatial import cKDTree
 from skimage.feature import plot_matches
 from skimage.measure import ransac
 from skimage.transform import AffineTransform
@@ -307,7 +308,7 @@ class DelfInferenceV1(object):
         
         
         # 3.2 pq search
-        k = 3  # k nearest neighber
+        k = 60  # k nearest neighber
         
         _, query_des2desList = self.pq.search(query_des_np, k) 
         
@@ -330,23 +331,62 @@ class DelfInferenceV1(object):
         
         # TODO: 3.4 verification by ransac (rerank)
         if verification:
-            query_img2imgFreq = self.get_ransac_result(query_img2imgFreq)
+            self.query_inlier_rank = self.get_ransac_result(query_img2imgFreq)
+            
+        
+#         # 3.5 index to image path
+#         for query_i in query_img2imgFreq:
+#             top_k_img_i_list = query_img2imgFreq[query_i]['index']
+#             top_k_img_path = [self.db_image_paths[img_i] for img_i in top_k_img_i_list]
+#             query_img2imgFreq[query_i]['path'] = top_k_img_path
+#         self.result = query_img2imgFreq
+        
+#         return query_img2imgFreq
 
-        
-        # 3.5 index to image path
-        
-        for query_i in query_img2imgFreq:
-            top_k_img_i_list = query_img2imgFreq[query_i]['index']
-            top_k_img_path = [self.db_image_paths[img_i] for img_i in top_k_img_i_list]
-            query_img2imgFreq[query_i]['path'] = top_k_img_path
-            
-        self.result = query_img2imgFreq
-        
+
+def ransac_by_index(query_index, db_index):
+    distance_threshold = 0.8
+
+    # get locations and descriptors from query
+    query_locations = self.query_result['locations'][query_index]
+    query_descriptors = self.query_result['descriptors'][query_index]
+    query_num_features = query_locations.shape[0]
+    print("Loaded query image's %d features" % query_num_features)
     
-        
-        
-        return query_img2imgFreq
-            
+    # get locations and descriptors from db
+    db_locations = self.db_result['locations'][db_index]
+    db_descriptors = self.db_result['descriptors'][db_index]
+    db_num_features = db_locations.shape[0]
+    print("Loaded db image's %d features" % db_num_features)
+     
+    # Find nearest-neighbor matches using a KD tree.
+    db_tree = cKDTree(db_descriptors)
+    _, indices = db_tree.query(
+        query_descriptors, distance_upper_bound=distance_threshold)
+
+    # Select feature locations for putative matches.
+    query_locations_matched = np.array([
+        query_locations[i,]
+        for i in range(query_num_features)
+        if indices[i] != db_num_features
+    ])
+    db_locations_matched = np.array([
+        db_locations[indices[i],]
+        for i in range(query_num_features)
+        if indices[i] != db_num_features
+    ])
+    
+    # Perform geometric verification using RANSAC.
+    _, inliers = ransac(
+        (db_locations_matched, locations_2_to_use),
+        AffineTransform,
+        min_samples=3,
+        residual_threshold=20,
+        max_trials=1000)
+    
+    
+    
+
     def get_ransac_result(self, query_img2imgFreq):
         
         # explore each image's frequency-based ranked image indices
