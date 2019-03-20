@@ -344,7 +344,7 @@ class DelfInferenceV1(object):
 #         return query_img2imgFreq
 
 
-def ransac_by_index(query_index, db_index):
+def get_ransac_score(query_index, db_index):
     distance_threshold = 0.8
 
     # get locations and descriptors from query
@@ -376,37 +376,29 @@ def ransac_by_index(query_index, db_index):
         if indices[i] != db_num_features
     ])
     
-    # Perform geometric verification using RANSAC.
-    _, inliers = ransac(
-        (db_locations_matched, locations_2_to_use),
-        AffineTransform,
-        min_samples=3,
-        residual_threshold=20,
-        max_trials=1000)
+    try:
+        _, inliers = ransac(
+            (db_locations_matched, query_locations_matched),
+            AffineTransform,
+            min_samples=3,
+            residual_threshold=20,
+            max_trials=1000)
+        # Score is num of true inliers
+        return sum(inliers)
+    except:
+        # Score is 0 if there's error
+        return 0    
     
-    
-    
-
     def get_ransac_result(self, query_img2imgFreq):
-        
+            
         # explore each image's frequency-based ranked image indices
         for query_i in query_img2imgFreq:
             ranked_list = query_img2imgFreq[query_i]['index']
             db_inliers = {}
             for db_i in ranked_list:
-                db_locations = np.array(self.db_result['locations'][db_i])
-                query_locations = np.array(self.query_result['locations'][query_i])
+                ransac_score = get_ransac_score(query_i, db_i)
+                db_inliers[db_i] = ransac_score
                 
-                # Perform geometric verification using RANSAC.
-                _, inliers = ransac(
-                    (db_locations, query_locations),
-                    AffineTransform,
-                    min_samples=3,
-                    residual_threshold=20,
-                    max_trials=1000)
-                print('sum(inliers):', sum(inliers),', type(inliers):', type(inliers))
-                
-                db_inliers[db_i] = sum(inliers)
             query_img2imgFreq[i]['inliers'] = sorted(db_inliers.items(), key=lambda dict: dict[1], reverse=True)
             
         return query_img2imgFreq
