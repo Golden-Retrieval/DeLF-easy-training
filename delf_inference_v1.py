@@ -206,7 +206,7 @@ class DelfInferenceV1(object):
         pq = faiss.IndexIVFPQ(coarse_quantizer, dim, n_centroids, n_subq, n_bits) 
         pq.nprobe = n_probe
         self.pq = pq
-        print('pq')
+        print('PQ complete')
             
             
     # 2
@@ -231,8 +231,9 @@ class DelfInferenceV1(object):
                 self.db_result = joblib.load(f)
 #             with open(filename_path, 'rb') as f:
 #                 self.db_image_paths = joblib.load(f)
-        for i in range(20):
-            print('{}th descriptors num: {}'.format(i, self.db_result['descriptors'][i].shape))
+#         for i in range(20):
+#             print('{}th descriptors num: {}'.format(i, self.db_result['descriptors'][i].shape))
+
         # 2.2
         self.des_from_img, self.img_from_des = make_index_table(self.db_result['descriptors'])
 
@@ -295,7 +296,7 @@ class DelfInferenceV1(object):
         return result
     
     # 3. search query  
-    def search_from_path(self, query_path, top_k=5, verification=True):       
+    def search_from_path(self, query_path, verification=True):       
         # 3.1 inference query images to descriptors (infer_image_to_des)
         self.query_image_paths, self.query_image_labels = load_dataset(query_path, no_label=True)
         
@@ -327,67 +328,69 @@ class DelfInferenceV1(object):
                 image_index: [list of image index of each descriptor]}
         """
         
-        query_img2imgFreq = self.get_similar_img(query_des2imgList, top_k)
+        query_img2imgFreq = self.get_similar_img(query_des2imgList)
+        self.result = query_img2imgFreq
         
-        # TODO: 3.4 verification by ransac (rerank)
+        # 3.4 verification by ransac (rerank)
         if verification:
-            self.query_inlier_rank = self.get_ransac_result(query_img2imgFreq)
+            query_inlier_rank = self.get_ransac_result(query_img2imgFreq)
+            self.result = query_inlier_rank
             
         
 #         # 3.5 index to image path
-#         for query_i in query_img2imgFreq:
-#             top_k_img_i_list = query_img2imgFreq[query_i]['index']
-#             top_k_img_path = [self.db_image_paths[img_i] for img_i in top_k_img_i_list]
-#             query_img2imgFreq[query_i]['path'] = top_k_img_path
-#         self.result = query_img2imgFreq
+        for query_i in self.result:
+            top_k_img_i_list = self.result[query_i]['index']
+            top_k_img_path = [self.db_image_paths[img_i] for img_i in top_k_img_i_list]
+            self.result[query_i]['path'] = top_k_img_path
+        self.result = query_img2imgFreq
         
-#         return query_img2imgFreq
+        return self.result
 
 
-def get_ransac_score(query_index, db_index):
-    distance_threshold = 0.8
+    def get_ransac_score(self, query_index, db_index):
+        distance_threshold = 0.8
 
-    # get locations and descriptors from query
-    query_locations = self.query_result['locations'][query_index]
-    query_descriptors = self.query_result['descriptors'][query_index]
-    query_num_features = query_locations.shape[0]
-    # print("Loaded query image's %d features" % query_num_features)
-    
-    # get locations and descriptors from db
-    db_locations = self.db_result['locations'][db_index]
-    db_descriptors = self.db_result['descriptors'][db_index]
-    db_num_features = db_locations.shape[0]
-    # print("Loaded db image's %d features" % db_num_features)
-     
-    # Find nearest-neighbor matches using a KD tree.
-    db_tree = cKDTree(db_descriptors)
-    _, indices = db_tree.query(
-        query_descriptors, distance_upper_bound=distance_threshold)
+        # get locations and descriptors from query
+        query_locations = self.query_result['locations'][query_index]
+        query_descriptors = self.query_result['descriptors'][query_index]
+        query_num_features = query_locations.shape[0]
+        # print("Loaded query image's %d features" % query_num_features)
 
-    # Select feature locations for putative matches.
-    query_locations_matched = np.array([
-        query_locations[i,]
-        for i in range(query_num_features)
-        if indices[i] != db_num_features
-    ])
-    db_locations_matched = np.array([
-        db_locations[indices[i],]
-        for i in range(query_num_features)
-        if indices[i] != db_num_features
-    ])
-    
-    try:
-        _, inliers = ransac(
-            (db_locations_matched, query_locations_matched),
-            AffineTransform,
-            min_samples=3,
-            residual_threshold=20,
-            max_trials=1000)
-        # Score is num of true inliers
-        return sum(inliers)
-    except:
-        # Score is 0 if there's error
-        return 0    
+        # get locations and descriptors from db
+        db_locations = self.db_result['locations'][db_index]
+        db_descriptors = self.db_result['descriptors'][db_index]
+        db_num_features = db_locations.shape[0]
+        # print("Loaded db image's %d features" % db_num_features)
+
+        # Find nearest-neighbor matches using a KD tree.
+        db_tree = cKDTree(db_descriptors)
+        _, indices = db_tree.query(
+            query_descriptors, distance_upper_bound=distance_threshold)
+
+        # Select feature locations for putative matches.
+        query_locations_matched = np.array([
+            query_locations[i,]
+            for i in range(query_num_features)
+            if indices[i] != db_num_features
+        ])
+        db_locations_matched = np.array([
+            db_locations[indices[i],]
+            for i in range(query_num_features)
+            if indices[i] != db_num_features
+        ])
+
+        try:
+            _, inliers = ransac(
+                (db_locations_matched, query_locations_matched),
+                AffineTransform,
+                min_samples=3,
+                residual_threshold=20,
+                max_trials=1000)
+            # Score is num of true inliers
+            return sum(inliers)
+        except:
+            # Score is 0 if there's error
+            return 0    
     
     def get_ransac_result(self, query_img2imgFreq):
         query_inlier_rank = {}
@@ -396,7 +399,7 @@ def get_ransac_score(query_index, db_index):
             ranked_list = query_img2imgFreq[query_i]['index']
             db_inliers = {}
             for db_i in ranked_list:
-                ransac_score = get_ransac_score(query_i, db_i)
+                ransac_score = self.get_ransac_score(query_i, db_i)
                 db_inliers[db_i] = ransac_score
             db_inliers_sorted = sorted(db_inliers.items(), key=lambda dict: dict[1], reverse=True)
             index, score = list(zip(*db_inliers_sorted))
@@ -411,14 +414,7 @@ def get_ransac_score(query_index, db_index):
             for i, db_index in enumerate(indices):
                 print('  top {}: {}'.format(i, self.db_image_paths[db_index]))
 
-    def print_inliers(self):
-        for i in self.result:
-            print('{}th query ({}): '.format(i, self.query_image_paths[i]['path']))
-            inliers = self.result[i]['index']
-            for i, db_index in enumerate(inliers):
-                print('  top {} inliers: {}, {}'.format(i, inliers[db_index], self.db_image_paths[db_index]))
-                
-    def get_similar_img(self, query_des2imgList, top_k):
+    def get_similar_img(self, query_des2imgList):
         
         query_img2imgFreq = {}
 
@@ -435,7 +431,6 @@ def get_ransac_score(query_index, db_index):
                 all_searched_des.extend(query_des2imgList[des_i])
 
             imgFreq = Counter(all_searched_des).most_common()
-            imgFreq = imgFreq[:top_k]
             index, freq = list(zip(*imgFreq))
             query_img2imgFreq[img_i] = {'index': index, 'freq':freq}
             
@@ -496,17 +491,12 @@ if __name__ == '__main__':
     # 1.2 get session
     # 1.3 initialize faiss object
     # TODO: 1.4 build graph
-    print('\n\n1')
-    print('='*30)
     delf_model = DelfInferenceV1(model_path=config.model_path, use_hub=True)
 
     # 2.attach db image path to delf_model instance
     # 2.1 inference db images to descriptors (infer_image_to_des)
     # 2.2 make indices dicts, img_from_des and des_from_img
     # 2.3 pq train & add
-    print('\n\n2')
-    print('='*30)
-
     delf_model.attach_db_from_path(config.db_path)
 
     # 3. search query 
@@ -514,16 +504,7 @@ if __name__ == '__main__':
     # 3.2 pq search
     # 3.3 find similar image list by frequency score (get_similar_img(mode='frequency', searched_des))
     # 3.4 verification by ransac (rerank)
-    print('\n\n3')
-    print('='*30)
-
-    delf_model.search_from_path(config.query_path, top_k=5, verification=True)
+    delf_model.search_from_path(config.query_path, verification=True)
 
     # print
-    print('\n\n4')
-    print('='*30)
-#     delf_model.print_result()
-    delf_model.print_inliers()
-    
-    print('\n\n5')
-    print('='*30)
+    delf_model.print_result()
