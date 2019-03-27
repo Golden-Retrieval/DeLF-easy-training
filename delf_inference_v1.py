@@ -251,7 +251,7 @@ class DelfInferenceV1(object):
         
         
         image_dataset = tf.data.Dataset.from_tensor_slices((image_paths, image_labels))
-        image_dataset = image_dataset.shuffle(buffer_size=len(image_paths))
+        #image_dataset = image_dataset.shuffle(buffer_size=len(image_paths))
         image_dataset = image_dataset.map(_parse_function, num_parallel_calls=num_preprocess_threads)
         
         iterator = image_dataset.make_initializable_iterator()
@@ -309,7 +309,7 @@ class DelfInferenceV1(object):
         
         
         # 3.2 pq search
-        k = 60  # k nearest neighber
+        k = 5  # k nearest neighber
         
         _, query_des2desList = self.pq.search(query_des_np, k) 
         
@@ -319,9 +319,11 @@ class DelfInferenceV1(object):
 
 
         # travel query images' inferenced descriptors
-        for img_i, des_list in enumerate(query_des2desList):
+        for i, des_list in enumerate(query_des2desList):
             # map inferenced descirptors to their parents' image index
-            query_des2imgList[img_i] = [self.img_from_des[des_i] for des_i in des_list]
+            query_des2imgList[i] = [self.img_from_des[des_i] for des_i in des_list]
+        
+
 
         """
             query_des2imgList = {
@@ -342,7 +344,6 @@ class DelfInferenceV1(object):
             top_k_img_i_list = self.result[query_i]['index']
             top_k_img_path = [self.db_image_paths[img_i] for img_i in top_k_img_i_list]
             self.result[query_i]['path'] = top_k_img_path
-        self.result = query_img2imgFreq
         
         return self.result
 
@@ -392,19 +393,23 @@ class DelfInferenceV1(object):
             # Score is 0 if there's error
             return 0    
     
-    def get_ransac_result(self, query_img2imgFreq):
+    def get_ransac_result(self, query_img2imgFreq, top_k=30):
         query_inlier_rank = {}
         # explore each image's frequency-based ranked image indices
         for query_i in trange(len(query_img2imgFreq)):
             ranked_list = query_img2imgFreq[query_i]['index']
             db_inliers = {}
-            for db_i in ranked_list:
+            for i, db_i in enumerate(ranked_list):
+                if i==top_k:
+                    break
                 ransac_score = self.get_ransac_score(query_i, db_i)
                 db_inliers[db_i] = ransac_score
+                print('query_{}: {}th, db_i_{} (score: {})'.format(query_i, i, db_i, ransac_score))
             db_inliers_sorted = sorted(db_inliers.items(), key=lambda dict: dict[1], reverse=True)
             index, score = list(zip(*db_inliers_sorted))
             query_inlier_rank[query_i] = {'index': index, 'score': score}
 
+        
         return query_inlier_rank
     
     def print_result(self):
